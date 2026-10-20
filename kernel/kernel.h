@@ -15,6 +15,9 @@
 #define PROCS_MAX 8
 #define PROC_UNUSED 0
 #define PROC_RUNNABLE 1
+#define PROC_EXITED 2
+
+#define SCAUSE_ECALL 8
 
 struct process {
   int pid;
@@ -81,8 +84,13 @@ struct trap_frame {
 __attribute__((weak)) extern char _binary_shell_bin_start[];
 __attribute__((weak)) extern char _binary_shell_bin_size[];
 
+extern struct process *current_proc;
+extern struct process *idle_proc;
+
 paddr_t alloc_pages(uint32_t n);
 void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
 struct process *create_process(const void *image, size_t image_size);
 void switch_context(uint32_t *prev_sp, uint32_t *next_sp);
 void yield(void);
+void handle_syscall(struct trap_frame *f);
+long getchar(void);

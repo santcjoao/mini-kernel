@@ -25,6 +25,13 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
 
 __attribute__((weak)) void putchar(char ch) { sbi_call(ch, 0, 0, 0, 0, 0, 0, 1); }
 
+long sbi_getchar(void) {
+  struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+  return ret.error;
+}
+
+__attribute__((weak)) long getchar(void) { return sbi_getchar(); }
+
 paddr_t alloc_pages(uint32_t n) {
   static paddr_t next_paddr = 0;
   if (!next_paddr)
@@ -65,8 +72,8 @@ void handle_trap(struct trap_frame *f) {
   uint32_t stval = READ_CSR(stval);
   uint32_t user_pc = READ_CSR(sepc);
 
-  if (scause == 8) {
-    putchar(f->a0);
+  if (scause == SCAUSE_ECALL) {
+    handle_syscall(f);
     user_pc += 4;
     WRITE_CSR(sepc, user_pc);
     return;
@@ -292,6 +299,31 @@ void yield(void) {
   struct process *prev = current_proc;
   current_proc = next;
   switch_context(&prev->sp, &next->sp);
+}
+
+void handle_syscall(struct trap_frame *f) {
+  switch (f->a3) {
+    case SYS_PUTCHAR:
+      putchar(f->a0);
+      break;
+    case SYS_GETCHAR:
+      while (1) {
+        long ch = sbi_getchar();
+        if (ch >= 0) {
+          f->a0 = ch;
+          break;
+        }
+        yield();
+      }
+      break;
+    case SYS_EXIT:
+      printf("process %d exited\n", current_proc->pid);
+      current_proc->state = PROC_EXITED;
+      yield();
+      PANIC("unreachable");
+    default:
+      PANIC("unexpected syscall a3=%x\n", f->a3);
+  }
 }
 
 void kernel_main(void) {
