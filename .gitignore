@@ -9,6 +9,7 @@ build/
 *.tar.gz
 *.tar
 *.zip
+*.img
 
 # Documentação e Relatórios Acadêmicos (Uso Local)
 docs/

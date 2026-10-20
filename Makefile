@@ -43,7 +43,12 @@ $$OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
 # Build the kernel
 $$CC $$CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c shell.bin.o
 
-$$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel kernel.elf
+(if [ ! -f disk.img ]; then echo "hello from disk image!" > disk.img; fi)
+
+$$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -drive id=drive0,file=disk.img,format=raw,if=none \
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
+    -kernel kernel.elf
 endef
 
 export RUN_SH_TEMPLATE
@@ -76,7 +81,11 @@ $(KERNEL_ELF): $(KERNEL_DIR)/kernel.c $(COMMON_DIR)/common.c $(KERNEL_DIR)/kerne
 
 # Execução no QEMU
 run: $(KERNEL_ELF)
-	$(QEMU) -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel $(KERNEL_ELF)
+	@if [ ! -f disk.img ]; then echo "hello from disk image!" > disk.img; fi
+	$(QEMU) -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+		-drive id=drive0,file=disk.img,format=raw,if=none \
+		-device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
+		-kernel $(KERNEL_ELF)
 
 # Limpeza determinística
 clean:
