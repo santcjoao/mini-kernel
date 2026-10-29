@@ -215,7 +215,7 @@ __attribute__((naked)) void user_entry(void) {
       "sret\n"
       :
       : [sepc] "r"(USER_BASE),
-        [sstatus] "r"(SSTATUS_SPIE));
+        [sstatus] "r"(SSTATUS_SPIE | SSTATUS_SUM));
 }
 
 struct process procs[PROCS_MAX];
@@ -323,6 +323,49 @@ void handle_syscall(struct trap_frame *f) {
       current_proc->state = PROC_EXITED;
       yield();
       PANIC("unreachable");
+    case SYS_READFILE:
+    case SYS_WRITEFILE: {
+      const char *filename = (const char *)f->a0;
+      char *buf = (char *)f->a1;
+      int len = f->a2;
+      struct file *file = fs_lookup(filename);
+      if (!file) {
+        if (f->a3 == SYS_WRITEFILE) {
+          for (int i = 0; i < FILES_MAX; i++) {
+            if (!files[i].in_use) {
+              file = &files[i];
+              file->in_use = true;
+              strcpy(file->name, filename);
+              file->size = 0;
+              break;
+            }
+          }
+        }
+        if (!file) {
+          printf("file not found: %s\n", filename);
+          f->a0 = -1;
+          break;
+        }
+      }
+
+      if (len > (int)sizeof(file->data))
+        len = file->size;
+
+      if (f->a3 == SYS_READFILE) {
+        if (len > (int)file->size)
+          len = file->size;
+        memcpy(buf, file->data, len);
+        f->a0 = len;
+      } else {
+        if (len > (int)sizeof(file->data))
+          len = sizeof(file->data);
+        memcpy(file->data, buf, len);
+        file->size = len;
+        fs_flush();
+        f->a0 = len;
+      }
+      break;
+    }
     default:
       PANIC("unexpected syscall a3=%x\n", f->a3);
   }
@@ -470,29 +513,131 @@ void write_disk(const void *buf, unsigned sector) {
   read_write_disk((void *)buf, sector, 1);
 }
 
+struct file files[FILES_MAX];
+uint8_t disk[DISK_MAX_SIZE];
+
+int oct2int(char *oct, int len) {
+  int dec = 0;
+  for (int i = 0; i < len; i++) {
+    if (oct[i] < '0' || oct[i] > '7')
+      break;
+
+    dec = dec * 8 + (oct[i] - '0');
+  }
+  return dec;
+}
+
+void fs_init(void) {
+  if (blk_capacity == 0)
+    return;
+
+  unsigned num_sectors = sizeof(disk) / SECTOR_SIZE;
+  if (num_sectors > blk_capacity / SECTOR_SIZE)
+    num_sectors = blk_capacity / SECTOR_SIZE;
+
+  for (unsigned sector = 0; sector < num_sectors; sector++)
+    read_write_disk(&disk[sector * SECTOR_SIZE], sector, false);
+
+  unsigned off = 0;
+  for (int i = 0; i < FILES_MAX; i++) {
+    if (off + sizeof(struct tar_header) > num_sectors * SECTOR_SIZE)
+      break;
+
+    struct tar_header *header = (struct tar_header *)&disk[off];
+    if (header->name[0] == '\0')
+      break;
+
+    if (strcmp(header->magic, "ustar") != 0 &&
+        strcmp(header->magic, "ustar  ") != 0)
+      PANIC("invalid tar header: magic=\"%s\"", header->magic);
+
+    int filesz = oct2int(header->size, sizeof(header->size));
+    if (header->type == '5') {
+      off += align_up(sizeof(struct tar_header) + filesz, SECTOR_SIZE);
+      i--;
+      continue;
+    }
+
+    struct file *file = &files[i];
+    file->in_use = true;
+    strcpy(file->name, header->name);
+    if (filesz > (int)sizeof(file->data))
+      filesz = sizeof(file->data);
+    memcpy(file->data, header->data, filesz);
+    file->size = filesz;
+    printf("file: %s, size=%d\n", file->name, (int)file->size);
+
+    off += align_up(sizeof(struct tar_header) + filesz, SECTOR_SIZE);
+  }
+}
+
+void fs_flush(void) {
+  memset(disk, 0, sizeof(disk));
+  unsigned off = 0;
+  for (int i = 0; i < FILES_MAX; i++) {
+    struct file *file = &files[i];
+    if (!file->in_use)
+      continue;
+
+    struct tar_header *header = (struct tar_header *)&disk[off];
+    memset(header, 0, sizeof(*header));
+    strcpy(header->name, file->name);
+    strcpy(header->mode, "000644");
+    strcpy(header->magic, "ustar");
+    strcpy(header->version, "00");
+    header->type = '0';
+
+    int filesz = file->size;
+    for (int j = sizeof(header->size) - 1; j > 0; j--) {
+      header->size[j - 1] = (filesz % 8) + '0';
+      filesz /= 8;
+    }
+
+    int checksum = ' ' * sizeof(header->checksum);
+    for (unsigned j = 0; j < sizeof(struct tar_header); j++)
+      checksum += (unsigned char)disk[off + j];
+
+    for (int j = 5; j >= 0; j--) {
+      header->checksum[j] = (checksum % 8) + '0';
+      checksum /= 8;
+    }
+
+    memcpy(header->data, file->data, file->size);
+    off += align_up(sizeof(struct tar_header) + file->size, SECTOR_SIZE);
+  }
+
+  unsigned num_sectors = sizeof(disk) / SECTOR_SIZE;
+  if (blk_capacity > 0 && num_sectors > blk_capacity / SECTOR_SIZE)
+    num_sectors = blk_capacity / SECTOR_SIZE;
+
+  for (unsigned sector = 0; sector < num_sectors; sector++)
+    read_write_disk(&disk[sector * SECTOR_SIZE], sector, true);
+
+  printf("wrote %d bytes to disk\n", (int)(num_sectors * SECTOR_SIZE));
+}
+
+struct file *fs_lookup(const char *filename) {
+  for (int i = 0; i < FILES_MAX; i++) {
+    struct file *file = &files[i];
+    if (!file->in_use)
+      continue;
+    if (!strcmp(file->name, filename))
+      return file;
+    if (file->name[0] == '.' && file->name[1] == '/' &&
+        !strcmp(file->name + 2, filename))
+      return file;
+  }
+
+  return NULL;
+}
+
 void kernel_main(void) {
   memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
 
   WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
   virtio_blk_init();
-
-  if (blk_capacity > 0) {
-    char disk_buf[SECTOR_SIZE];
-    read_write_disk(disk_buf, 0, false);
-    disk_buf[sizeof(disk_buf) - 1] = '\0';
-    printf("virtio-blk: sector 0 read: %s\n", disk_buf);
-
-    strcpy(disk_buf, "sector 1 persisted write test");
-    read_write_disk(disk_buf, 1, true);
-
-    memset(disk_buf, 0, sizeof(disk_buf));
-    read_write_disk(disk_buf, 1, false);
-    disk_buf[sizeof(disk_buf) - 1] = '\0';
-    printf("virtio-blk: sector 1 verified: %s\n", disk_buf);
-
-    read_write_disk(disk_buf, blk_capacity / SECTOR_SIZE + 10, false);
-  }
+  fs_init();
 
   idle_proc = create_process(NULL, 0);
   idle_proc->pid = 0;

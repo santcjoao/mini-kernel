@@ -9,6 +9,7 @@
 #define PAGE_U (1 << 4)
 
 #define SSTATUS_SPIE (1 << 5)
+#define SSTATUS_SUM (1 << 18)
 
 #define USER_BASE 0x1000000
 
@@ -47,6 +48,37 @@
 
 #define VIRTIO_BLK_T_IN 0
 #define VIRTIO_BLK_T_OUT 1
+
+#define FILES_MAX 8
+#define DISK_MAX_SIZE align_up(sizeof(struct file) * FILES_MAX, SECTOR_SIZE)
+
+struct tar_header {
+  char name[100];
+  char mode[8];
+  char uid[8];
+  char gid[8];
+  char size[12];
+  char mtime[12];
+  char checksum[8];
+  char type;
+  char linkname[100];
+  char magic[6];
+  char version[2];
+  char uname[32];
+  char gname[32];
+  char devmajor[8];
+  char devminor[8];
+  char prefix[155];
+  char padding[12];
+  char data[];
+} __attribute__((packed));
+
+struct file {
+  bool in_use;
+  char name[100];
+  char data[1024];
+  size_t size;
+};
 
 struct virtq_desc {
   uint64_t addr;
@@ -156,6 +188,7 @@ __attribute__((weak)) extern char _binary_shell_bin_size[];
 
 extern struct process *current_proc;
 extern struct process *idle_proc;
+extern struct file files[FILES_MAX];
 
 paddr_t alloc_pages(uint32_t n);
 void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
@@ -168,3 +201,6 @@ void virtio_blk_init(void);
 void read_write_disk(void *buf, unsigned sector, int is_write);
 void read_disk(void *buf, unsigned sector);
 void write_disk(const void *buf, unsigned sector);
+void fs_init(void);
+void fs_flush(void);
+struct file *fs_lookup(const char *filename);

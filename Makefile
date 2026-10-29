@@ -43,10 +43,15 @@ $$OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
 # Build the kernel
 $$CC $$CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c shell.bin.o
 
-(if [ ! -f disk.img ]; then echo "hello from disk image!" > disk.img; fi)
+if [ ! -f disk.tar ]; then
+    mkdir -p disk
+    if [ ! -f disk/hello.txt ]; then echo "Hello World from hello.txt!" > disk/hello.txt; fi
+    if [ ! -f disk/meow.txt ]; then echo "Meow! Meow! Meow!" > disk/meow.txt; fi
+    (cd disk && tar cf ../disk.tar --format=ustar *.txt)
+fi
 
 $$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
-    -drive id=drive0,file=disk.img,format=raw,if=none \
+    -drive id=drive0,file=disk.tar,format=raw,if=none \
     -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
     -kernel kernel.elf
 endef
@@ -81,15 +86,20 @@ $(KERNEL_ELF): $(KERNEL_DIR)/kernel.c $(COMMON_DIR)/common.c $(KERNEL_DIR)/kerne
 
 # Execução no QEMU
 run: $(KERNEL_ELF)
-	@if [ ! -f disk.img ]; then echo "hello from disk image!" > disk.img; fi
+	@if [ ! -f disk.tar ]; then \
+		mkdir -p disk; \
+		if [ ! -f disk/hello.txt ]; then echo "Hello World from hello.txt!" > disk/hello.txt; fi; \
+		if [ ! -f disk/meow.txt ]; then echo "Meow! Meow! Meow!" > disk/meow.txt; fi; \
+		(cd disk && tar cf ../disk.tar --format=ustar *.txt); \
+	fi
 	$(QEMU) -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
-		-drive id=drive0,file=disk.img,format=raw,if=none \
+		-drive id=drive0,file=disk.tar,format=raw,if=none \
 		-device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
 		-kernel $(KERNEL_ELF)
 
 # Limpeza determinística
 clean:
-	rm -rf $(BUILD_DIR) *.elf *.bin *.o *.map *.tar *.tar.gz
+	rm -rf $(BUILD_DIR) *.elf *.bin *.o *.map *.tar *.tar.gz disk
 	@rm -f docs/relatorios/*/*.aux docs/relatorios/*/*.log docs/relatorios/*/*.bbl docs/relatorios/*/*.blg docs/relatorios/*/*.out docs/relatorios/*/*.toc
 
 # Pacote para submissão (.tar.gz com layout plano)

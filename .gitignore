@@ -1,5 +1,6 @@
 # Diretório de build out-of-tree
 build/
+disk/
 
 # Binários e artefatos gerados
 *.elf
